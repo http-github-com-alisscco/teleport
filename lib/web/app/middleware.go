@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/trace"
@@ -77,16 +78,19 @@ func (h *Handler) redirectToLauncher(w http.ResponseWriter, r *http.Request, p l
 	if p.clusterName != "" && p.publicAddr != "" {
 		urlPath = append(urlPath, p.clusterName, p.publicAddr)
 	}
-	urlQuery := ""
+	var urlQuery []string
 	if p.stateToken != "" {
-		urlQuery = fmt.Sprintf("state=%v", p.stateToken)
+		urlQuery = append(urlQuery, fmt.Sprintf("state=%v", p.stateToken))
+	}
+	if p.awsRole != "" {
+		urlQuery = append(urlQuery, fmt.Sprintf("arn=%v", p.awsRole))
 	}
 
 	u := url.URL{
 		Scheme:   "https",
 		Host:     h.c.WebPublicAddr,
 		Path:     path.Join(urlPath...),
-		RawQuery: urlQuery,
+		RawQuery: strings.Join(urlQuery, "&"),
 	}
 	http.Redirect(w, r, u.String(), http.StatusFound)
 	return nil
@@ -96,6 +100,7 @@ type launcherURLParams struct {
 	clusterName string
 	publicAddr  string
 	stateToken  string
+	awsRole     string
 }
 
 // makeRouterHandler creates a httprouter.Handle.

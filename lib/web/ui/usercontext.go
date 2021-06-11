@@ -78,6 +78,8 @@ type userACL struct {
 	AccessRequests access `json:"accessRequests"`
 	// Billing defines access to billing information
 	Billing access `json:"billing"`
+	// AWSRoleARNs defines access to AWS role ARNs user can assume.
+	AWSRoleARNs []string `json:"awsRoleARNs"`
 }
 
 type authType string
@@ -122,6 +124,28 @@ func getLogins(roleSet services.RoleSet) []string {
 	}
 
 	return userLogins
+}
+
+func getAWSRoleARNs(roleSet services.RoleSet) []string {
+	allowed := []string{}
+	denied := []string{}
+	for _, role := range roleSet {
+		denied = append(denied, role.GetAWSRoleARNs(services.Deny)...)
+		allowed = append(allowed, role.GetAWSRoleARNs(services.Allow)...)
+	}
+
+	allowed = apiutils.Deduplicate(allowed)
+	denied = apiutils.Deduplicate(denied)
+	roleARNs := []string{}
+	for _, login := range allowed {
+		// Reuse MatchLogin since logic is the same.
+		loginMatch, _ := services.MatchLogin(denied, login)
+		if !loginMatch {
+			roleARNs = append(roleARNs, login)
+		}
+	}
+
+	return roleARNs
 }
 
 func hasAccess(roleSet services.RoleSet, ctx *services.Context, kind string, verbs ...string) bool {
@@ -194,6 +218,7 @@ func NewUserContext(user types.User, userRoles services.RoleSet, features proto.
 
 	logins := getLogins(userRoles)
 	accessStrategy := getAccessStrategy(userRoles)
+	roleARNs := getAWSRoleARNs(userRoles)
 
 	acl := userACL{
 		AccessRequests:  requestAccess,
@@ -210,6 +235,7 @@ func NewUserContext(user types.User, userRoles services.RoleSet, features proto.
 		Tokens:          tokenAccess,
 		Nodes:           nodeAccess,
 		Billing:         billingAccess,
+		AWSRoleARNs:     roleARNs,
 	}
 
 	// local user

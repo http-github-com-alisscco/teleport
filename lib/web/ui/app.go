@@ -19,8 +19,12 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/tlsca"
+
+	"github.com/aws/aws-sdk-go/aws/arn"
 )
 
 // App describes an application
@@ -37,15 +41,41 @@ type App struct {
 	ClusterID string `json:"clusterId"`
 	// Labels is a map of static labels associated with an application.
 	Labels []Label `json:"labels"`
+	// IsAWSConsole if true, indicates that the app represents AWS management console.
+	IsAWSConsole bool `json:"isAWSConsole"`
+	// AWSRoles is a list of AWS IAM roles for the application representing AWS console.
+	AWSRoles []AWSRole `json:"awsRoles,omitempty"`
+}
+
+// AWSRole describes an AWS IAM role for AWS console access.
+type AWSRole struct {
+	// Display is the role display name.
+	Display string `json:"display"`
+	// ARN is the full role ARN.
+	ARN string `json:"arn"`
+}
+
+// MakeAppsConfig contains parameters for converting apps to UI representation.
+type MakeAppsConfig struct {
+	// LocalClusterName is the name of the local cluster.
+	LocalClusterName string
+	// LocalProxyDNSName is the public hostname of the local cluster.
+	LocalProxyDNSName string
+	// AppClusterName is the name of the cluster apps reside in.
+	AppClusterName string
+	// Apps is a list of registered apps.
+	Apps []types.Server
+	// Identity is identity of the logged in user.
+	Identity *tlsca.Identity
 }
 
 // MakeApps creates server application objects
-func MakeApps(localClusterName string, localProxyDNSName string, appClusterName string, appServers []types.Server) []App {
+func MakeApps(c MakeAppsConfig) []App {
 	result := []App{}
-	for _, server := range appServers {
+	for _, server := range c.Apps {
 		teleApps := server.GetApps()
 		for _, teleApp := range teleApps {
-			fqdn := AssembleAppFQDN(localClusterName, localProxyDNSName, appClusterName, teleApp)
+			fqdn := AssembleAppFQDN(c.LocalClusterName, c.LocalProxyDNSName, c.AppClusterName, teleApp)
 			labels := []Label{}
 			for name, value := range teleApp.StaticLabels {
 				labels = append(labels, Label{
@@ -56,17 +86,46 @@ func MakeApps(localClusterName string, localProxyDNSName string, appClusterName 
 
 			sort.Sort(sortedLabels(labels))
 
-			result = append(result, App{
-				Name:       teleApp.Name,
-				URI:        teleApp.URI,
-				PublicAddr: teleApp.PublicAddr,
-				Labels:     labels,
-				ClusterID:  appClusterName,
-				FQDN:       fqdn,
-			})
+			app := App{
+				Name:         teleApp.Name,
+				URI:          teleApp.URI,
+				PublicAddr:   teleApp.PublicAddr,
+				Labels:       labels,
+				ClusterID:    c.AppClusterName,
+				FQDN:         fqdn,
+				IsAWSConsole: teleApp.IsAWSConsole(),
+			}
+
+			if teleApp.IsAWSConsole() {
+				app.AWSRoles = filterAWSRoleARNs(c.Identity.AWSRoleARNs,
+					teleApp.GetAWSAccountID())
+			}
+
+			result = append(result, app)
 		}
 	}
 
+	return result
+}
+
+// filterAWSRoleARNs returns role ARNs from the provided list that belong
+// to the specified AWS account ID.
+func filterAWSRoleARNs(awsRoleARNS []string, awsAccountID string) (result []AWSRole) {
+	for _, roleARN := range awsRoleARNS {
+		parsed, err := arn.Parse(roleARN)
+		if err != nil || parsed.AccountID != awsAccountID {
+			continue
+		}
+		// Example ARN: arn:aws:iam::1234567890:role/EC2FullAccess.
+		parts := strings.Split(parsed.Resource, "/")
+		if len(parts) != 2 || parts[0] != "role" {
+			continue
+		}
+		result = append(result, AWSRole{
+			Display: parts[1],
+			ARN:     roleARN,
+		})
+	}
 	return result
 }
 

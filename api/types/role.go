@@ -116,6 +116,11 @@ type Role interface {
 	GetImpersonateConditions(rct RoleConditionType) ImpersonateConditions
 	// SetImpersonateConditions returns conditions this role is allowed or denied to impersonate.
 	SetImpersonateConditions(rct RoleConditionType, cond ImpersonateConditions)
+
+	// GetAWSRoleARNs returns a list of AWS role ARNs this role is allowed to assume.
+	GetAWSRoleARNs(RoleConditionType) []string
+	// SetAWSRoleARNs returns a list of AWS role ARNs this role is allowed to assume.
+	SetAWSRoleARNs(RoleConditionType, []string)
 }
 
 // NewRole constructs new standard role
@@ -462,6 +467,23 @@ func (r *RoleV4) SetImpersonateConditions(rct RoleConditionType, cond Impersonat
 		r.Spec.Allow.Impersonate = &cond
 	} else {
 		r.Spec.Deny.Impersonate = &cond
+	}
+}
+
+// GetAWSRoleARNs returns a list of AWS role ARNs this role is allowed to impersonate.
+func (r *RoleV4) GetAWSRoleARNs(rct RoleConditionType) []string {
+	if rct == Allow {
+		return r.Spec.Allow.AWSRoleARNs
+	}
+	return r.Spec.Deny.AWSRoleARNs
+}
+
+// SetAWSRoleARNs sets a list of AWS role ARNs this role is allowed to impersonate.
+func (r *RoleV4) SetAWSRoleARNs(rct RoleConditionType, arns []string) {
+	if rct == Allow {
+		r.Spec.Allow.AWSRoleARNs = arns
+	} else {
+		r.Spec.Deny.AWSRoleARNs = arns
 	}
 }
 

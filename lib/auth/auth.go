@@ -563,6 +563,8 @@ type certRequest struct {
 	appClusterName string
 	// appName is the name of the application to generate cert for.
 	appName string
+	// awsRoleARN is the role ARN to generate certificate for.
+	awsRoleARN string
 	// dbService identifies the name of the database service requests will
 	// be routed to.
 	dbService string
@@ -863,6 +865,12 @@ func (a *Server) generateUserCert(req certRequest) (*certs, error) {
 		return nil, trace.Wrap(err)
 	}
 
+	// See which AWS role ARNs this user is allowed to assume.
+	roleARNs, err := req.checker.CheckAWSRoleARNs(sessionTTL, req.overrideRoleTTL)
+	if err != nil && !trace.IsNotFound(err) {
+		return nil, trace.Wrap(err)
+	}
+
 	// generate TLS certificate
 	tlsAuthority, err := tlsca.FromAuthority(ca)
 	if err != nil {
@@ -884,6 +892,7 @@ func (a *Server) generateUserCert(req certRequest) (*certs, error) {
 			PublicAddr:  req.appPublicAddr,
 			ClusterName: req.appClusterName,
 			Name:        req.appName,
+			AWSRoleARN:  req.awsRoleARN,
 		},
 		TeleportCluster: clusterName,
 		RouteToDatabase: tlsca.RouteToDatabase{
@@ -896,6 +905,7 @@ func (a *Server) generateUserCert(req certRequest) (*certs, error) {
 		DatabaseUsers: dbUsers,
 		MFAVerified:   req.mfaVerified,
 		ClientIP:      req.clientIP,
+		AWSRoleARNs:   roleARNs,
 	}
 	subject, err := identity.Subject()
 	if err != nil {
