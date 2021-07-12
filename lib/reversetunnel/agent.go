@@ -270,8 +270,28 @@ func (a *Agent) connect() (conn *ssh.Client, err error) {
 			Timeout:         apidefaults.DefaultDialTimeout,
 		})
 		if err != nil {
-			a.log.Debugf("Failed to create client to %v: %v.", a.Addr.Addr, err)
-			continue
+			//TODO(smallinksy) clean
+			if err.Error() == "ssh: handshake failed: EOF" {
+				dialer = proxy.SNIProxyDialer()
+				pconn, err = dialer.DialTimeout(a.Addr.AddrNetwork, a.Addr.Addr, apidefaults.DefaultDialTimeout)
+				if err != nil {
+					a.log.Debugf("Dial to %v failed: %v.", a.Addr.Addr, err)
+					continue
+				}
+				conn, chans, reqs, err = ssh.NewClientConn(pconn, a.Addr.Addr, &ssh.ClientConfig{
+					User:            a.Username,
+					Auth:            []ssh.AuthMethod{authMethod},
+					HostKeyCallback: a.checkHostSignature,
+					Timeout:         apidefaults.DefaultDialTimeout,
+				})
+				if err != nil {
+					a.log.Debugf("Failed to create client to %v: %v.", a.Addr.Addr, err)
+					continue
+				}
+			} else {
+				a.log.Debugf("Failed to create client to %v: %v.", a.Addr.Addr, err)
+				continue
+			}
 		}
 
 		// Create an empty channel and close it right away. This will prevent

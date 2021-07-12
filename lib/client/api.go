@@ -61,6 +61,7 @@ import (
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/shell"
+	"github.com/gravitational/teleport/lib/srv/alpnproxy"
 	"github.com/gravitational/teleport/lib/sshutils/scp"
 	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
@@ -321,6 +322,9 @@ type Config struct {
 
 	// HomePath is where tsh stores profiles
 	HomePath string
+
+	//TODO(smallinksy) add comment
+	MultiPortSetup bool
 }
 
 // CachePolicy defines cache policy for local clients
@@ -762,6 +766,7 @@ func (c *Config) LoadProfile(profileDir string, proxyName string) error {
 	c.SSHProxyAddr = cp.SSHProxyAddr
 	c.PostgresProxyAddr = cp.PostgresProxyAddr
 	c.MySQLProxyAddr = cp.MySQLProxyAddr
+	c.MultiPortSetup = cp.MultiPortSetup
 
 	c.LocalForwardPorts, err = ParsePortForwardSpec(cp.ForwardedPorts)
 	if err != nil {
@@ -794,6 +799,7 @@ func (c *Config) SaveProfile(dir string, makeCurrent bool) error {
 	cp.MySQLProxyAddr = c.MySQLProxyAddr
 	cp.ForwardedPorts = c.LocalForwardPorts.String()
 	cp.SiteName = c.SiteName
+	cp.MultiPortSetup = c.MultiPortSetup
 
 	if err := cp.SaveToDir(dir, makeCurrent); err != nil {
 		return trace.Wrap(err)
@@ -891,6 +897,9 @@ func (c *Config) ParseProxyHost(proxyHost string) error {
 
 // KubeProxyHostPort returns the host and port of the Kubernetes proxy.
 func (c *Config) KubeProxyHostPort() (string, int) {
+	if c.MultiPortSetup {
+		return c.WebProxyHostPort()
+	}
 	if c.KubeProxyAddr != "" {
 		addr, err := utils.ParseAddr(c.KubeProxyAddr)
 		if err == nil {
@@ -1373,6 +1382,44 @@ func (tc *TeleportClient) SSH(ctx context.Context, command []string, runLocally 
 		fmt.Printf("\x1b[1mWARNING\x1b[0m: Multiple nodes match the label selector, picking first: %v\n", nodeAddrs[0])
 	}
 	return tc.runShell(nodeClient, nil)
+}
+
+func (tc *TeleportClient) SSHNodeSSHNodeConnConn(ctx context.Context, command []string, runLocally bool) (*NodeClient, error) {
+	// connect to proxy first:
+	if !tc.Config.ProxySpecified() {
+		return nil, trace.BadParameter("proxy server is not specified")
+	}
+	proxyClient, err := tc.ConnectToProxy(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	defer proxyClient.Close()
+	siteInfo, err := proxyClient.currentCluster()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	nodeAddrs, err := tc.getTargetNodes(ctx, proxyClient)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if len(nodeAddrs) == 0 {
+		return nil, trace.BadParameter("no target host specified")
+	}
+
+	nodeClient, err := proxyClient.ConnectToNode(
+		ctx,
+		NodeAddr{Addr: nodeAddrs[0], Namespace: tc.Namespace, Cluster: siteInfo.Name},
+		tc.Config.HostLogin,
+		false)
+	if err != nil {
+		tc.ExitStatus = 1
+		return nil, trace.Wrap(err)
+	}
+
+	// If forwarding ports were specified, start port forwarding.
+	tc.startPortForwarding(ctx, nodeClient)
+	return nodeClient, nil
+
 }
 
 func (tc *TeleportClient) startPortForwarding(ctx context.Context, nodeClient *NodeClient) {
@@ -2040,10 +2087,9 @@ func (tc *TeleportClient) connectToProxy(ctx context.Context) (*ProxyClient, err
 	}
 	log.Infof("Connecting proxy=%v login=%q", sshProxyAddr, sshConfig.User)
 
-	sshClient, err := ssh.Dial("tcp", sshProxyAddr, sshConfig)
+	sshClient, err := makeProxySSHClient(tc.Config, sshConfig)
 	if err != nil {
-		log.WithError(err).Warnf("Failed to authenticate with proxy %v.", sshProxyAddr)
-		return nil, trace.Wrap(err, "failed to authenticate with proxy %v", sshProxyAddr)
+		return nil, trace.Wrap(err)
 	}
 
 	log.Infof("Successful auth with proxy %v.", sshProxyAddr)
@@ -2058,6 +2104,32 @@ func (tc *TeleportClient) connectToProxy(ctx context.Context) (*ProxyClient, err
 		siteName:        clusterName(),
 		clientAddr:      tc.ClientAddr,
 	}, nil
+}
+
+func makeProxySSHClient(cfg Config, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	if cfg.MultiPortSetup {
+		tlsConn, err := tls.Dial("tcp", cfg.WebProxyAddr, &tls.Config{
+			NextProtos:         []string{alpnproxy.ProtocolProxySSH},
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		})
+		if err != nil {
+			log.WithError(err).Warnf("failed to dial tls %v.", cfg.WebProxyAddr)
+			return nil, trace.Wrap(err, "failed to dial tls %v", cfg.WebProxyAddr)
+
+		}
+		c, chans, reqs, err := ssh.NewClientConn(tlsConn, cfg.WebProxyAddr, sshConfig)
+		if err != nil {
+			log.WithError(err).Warnf("Failed to authenticate with proxy %v.", cfg.WebProxyAddr)
+			return nil, trace.Wrap(err, "failed to authenticate with proxy %v", cfg.WebProxyAddr)
+		}
+		return ssh.NewClient(c, chans, reqs), nil
+	}
+	client, err := ssh.Dial("tcp", cfg.SSHProxyAddr, sshConfig)
+	if err != nil {
+		log.WithError(err).Warnf("Failed to authenticate with proxy %v.", cfg.SSHProxyAddr)
+		return nil, trace.Wrap(err, "failed to authenticate with proxy %v", cfg.SSHProxyAddr)
+	}
+	return client, nil
 }
 
 func (tc *TeleportClient) rootClusterName() (string, error) {
@@ -2426,7 +2498,7 @@ func (tc *TeleportClient) applyProxySettings(proxySettings webclient.ProxySettin
 					proxySettings.Kube.PublicAddr)
 			}
 			tc.KubeProxyAddr = proxySettings.Kube.PublicAddr
-		// ListenAddr is the second preference.
+		// TunnelAddr is the second preference.
 		case proxySettings.Kube.ListenAddr != "":
 			addr, err := utils.ParseAddr(proxySettings.Kube.ListenAddr)
 			if err != nil {
@@ -2434,7 +2506,7 @@ func (tc *TeleportClient) applyProxySettings(proxySettings webclient.ProxySettin
 					"failed to parse value received from the server: %q, contact your administrator for help",
 					proxySettings.Kube.ListenAddr)
 			}
-			// If ListenAddr host is 0.0.0.0 or [::], replace it with something
+			// If TunnelAddr host is 0.0.0.0 or [::], replace it with something
 			// routable from the web endpoint.
 			if net.ParseIP(addr.Host()).IsUnspecified() {
 				webProxyHost, _ := tc.WebProxyHostPort()
@@ -2442,7 +2514,7 @@ func (tc *TeleportClient) applyProxySettings(proxySettings webclient.ProxySettin
 			} else {
 				tc.KubeProxyAddr = proxySettings.Kube.ListenAddr
 			}
-		// If neither PublicAddr nor ListenAddr are passed, use the web
+		// If neither PublicAddr nor TunnelAddr are passed, use the web
 		// interface hostname with default k8s port as a guess.
 		default:
 			webProxyHost, _ := tc.WebProxyHostPort()
@@ -2528,6 +2600,8 @@ func (tc *TeleportClient) applyProxySettings(proxySettings webclient.ProxySettin
 		}
 		tc.MySQLProxyAddr = net.JoinHostPort(tc.WebProxyHost(), strconv.Itoa(addr.Port(defaults.MySQLListenPort)))
 	}
+
+	tc.MultiPortSetup = proxySettings.MultiPortSetup
 
 	return nil
 }

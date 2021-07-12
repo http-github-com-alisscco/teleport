@@ -26,6 +26,7 @@ import (
 	"net/http"
 
 	"github.com/gravitational/teleport/api/constants"
+
 	"github.com/gravitational/trace"
 )
 
@@ -111,6 +112,8 @@ type ProxySettings struct {
 	SSH SSHProxySettings `json:"ssh"`
 	// DB contains database access specific proxy settings
 	DB DBProxySettings `json:"db"`
+
+	MultiPortSetup     bool   `json:"multi_port_setup"`
 }
 
 // KubeProxySettings is kubernetes proxy settings

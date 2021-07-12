@@ -79,6 +79,7 @@ import (
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/srv"
+	"github.com/gravitational/teleport/lib/srv/alpnproxy"
 	"github.com/gravitational/teleport/lib/srv/app"
 	"github.com/gravitational/teleport/lib/srv/db"
 	"github.com/gravitational/teleport/lib/srv/regular"
@@ -2096,6 +2097,7 @@ func (process *TeleportProcess) initDiagnosticService() error {
 		}
 		log.Infof("Exited.")
 	})
+
 	return nil
 }
 
@@ -2233,6 +2235,10 @@ type proxyListeners struct {
 	reverseTunnel net.Listener
 	kube          net.Listener
 	db            dbListeners
+	webWrapper    net.Listener
+	webTLSDB      net.Listener
+
+	alpnRouter net.Listener
 }
 
 // dbListeners groups database access listeners.
@@ -2280,8 +2286,19 @@ func (l *proxyListeners) Close() {
 	if l.kube != nil {
 		l.kube.Close()
 	}
+	if l.alpnRouter != nil {
+		l.alpnRouter.Close()
+	}
 	if !l.db.Empty() {
 		l.db.Close()
+	}
+
+	if l.webTLSDB != nil {
+		l.webTLSDB.Close()
+	}
+
+	if l.webWrapper != nil {
+		l.webWrapper.Close()
 	}
 }
 
@@ -2292,12 +2309,14 @@ func (process *TeleportProcess) setupProxyListeners() (*proxyListeners, error) {
 	var err error
 	var listeners proxyListeners
 
-	listeners.ssh, err = process.importOrCreateListener(listenerProxySSH, cfg.Proxy.SSHAddr.Addr)
-	if err != nil {
-		return nil, trace.Wrap(err)
+	if cfg.Proxy.SSHAddr.Addr != "" {
+		listeners.ssh, err = process.importOrCreateListener(listenerProxySSH, cfg.Proxy.SSHAddr.Addr)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
-	if cfg.Proxy.Kube.Enabled {
+	if cfg.Proxy.Kube.Enabled && !cfg.Proxy.Kube.ListenAddr.IsEmpty() {
 		process.log.Debugf("Setup Proxy: turning on Kubernetes proxy.")
 		listener, err := process.importOrCreateListener(listenerProxyKube, cfg.Proxy.Kube.ListenAddr.Addr)
 		if err != nil {
@@ -2306,7 +2325,7 @@ func (process *TeleportProcess) setupProxyListeners() (*proxyListeners, error) {
 		listeners.kube = listener
 	}
 
-	if !cfg.Proxy.MySQLAddr.IsEmpty() {
+	if !cfg.Proxy.MySQLAddr.IsEmpty() && !cfg.Proxy.DisableDatabaseProxy {
 		process.log.Debugf("Setup Proxy: MySQL proxy address: %v.", cfg.Proxy.MySQLAddr.Addr)
 		listener, err := process.importOrCreateListener(listenerProxyMySQL, cfg.Proxy.MySQLAddr.Addr)
 		if err != nil {
@@ -2372,14 +2391,14 @@ func (process *TeleportProcess) setupProxyListeners() (*proxyListeners, error) {
 		return &listeners, nil
 	default:
 		process.log.Debug("Setup Proxy: Proxy and reverse tunnel are listening on separate ports.")
-		if !cfg.Proxy.DisableReverseTunnel {
+		if !cfg.Proxy.DisableReverseTunnel && !cfg.Proxy.ReverseTunnelListenAddr.IsEmpty() {
 			listeners.reverseTunnel, err = process.importOrCreateListener(listenerProxyTunnel, cfg.Proxy.ReverseTunnelListenAddr.Addr)
 			if err != nil {
 				listeners.Close()
 				return nil, trace.Wrap(err)
 			}
 		}
-		if !cfg.Proxy.DisableWebService {
+		if !cfg.Proxy.DisableWebService && !cfg.Proxy.WebAddr.IsEmpty() {
 			listener, err := process.importOrCreateListener(listenerProxyWeb, cfg.Proxy.WebAddr.Addr)
 			if err != nil {
 				listeners.Close()
@@ -2424,6 +2443,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	}()
 	var err error
 	cfg := process.Config
+	var tlsConfigWeb *tls.Config
 
 	proxyLimiter, err := limiter.NewLimiter(cfg.Proxy.Limiter)
 	if err != nil {
@@ -2454,7 +2474,9 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	proxySSHAddr := cfg.Proxy.SSHAddr
 	// override value of cfg.Proxy.SSHAddr with listener addr in order
 	// to support binding to a random port (e.g. `127.0.0.1:0`).
-	proxySSHAddr.Addr = listeners.ssh.Addr().String()
+	if listeners.ssh != nil {
+		proxySSHAddr.Addr = listeners.ssh.Addr().String()
+	}
 
 	log := process.log.WithFields(logrus.Fields{
 		trace.Component: teleport.Component(teleport.ComponentReverseTunnelServer, process.id),
@@ -2480,6 +2502,8 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		Emitter:  asyncEmitter,
 		Streamer: streamer,
 	}
+
+	alpnRouteMap := setupALPN(listeners, cfg)
 
 	// register SSH reverse tunnel server that accepts connections
 	// from remote teleport nodes
@@ -2537,39 +2561,6 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	var webServer *http.Server
 	var webHandler *web.RewritingHandler
 	if !process.Config.Proxy.DisableWebService {
-		proxySettings := webclient.ProxySettings{
-			Kube: webclient.KubeProxySettings{
-				Enabled: cfg.Proxy.Kube.Enabled,
-			},
-			SSH: webclient.SSHProxySettings{
-				ListenAddr:       proxySSHAddr.Addr,
-				TunnelListenAddr: cfg.Proxy.ReverseTunnelListenAddr.String(),
-			},
-		}
-		if len(cfg.Proxy.PublicAddrs) > 0 {
-			proxySettings.SSH.PublicAddr = cfg.Proxy.PublicAddrs[0].String()
-		}
-		if len(cfg.Proxy.SSHPublicAddrs) > 0 {
-			proxySettings.SSH.SSHPublicAddr = cfg.Proxy.SSHPublicAddrs[0].String()
-		}
-		if len(cfg.Proxy.TunnelPublicAddrs) > 0 {
-			proxySettings.SSH.TunnelPublicAddr = cfg.Proxy.TunnelPublicAddrs[0].String()
-		}
-		if cfg.Proxy.Kube.Enabled {
-			proxySettings.Kube.ListenAddr = cfg.Proxy.Kube.ListenAddr.String()
-		}
-		if len(cfg.Proxy.Kube.PublicAddrs) > 0 {
-			proxySettings.Kube.PublicAddr = cfg.Proxy.Kube.PublicAddrs[0].String()
-		}
-		if len(cfg.Proxy.PostgresPublicAddrs) > 0 {
-			proxySettings.DB.PostgresPublicAddr = cfg.Proxy.PostgresPublicAddrs[0].String()
-		}
-		if !cfg.Proxy.MySQLAddr.IsEmpty() {
-			proxySettings.DB.MySQLListenAddr = cfg.Proxy.MySQLAddr.String()
-		}
-		if len(cfg.Proxy.MySQLPublicAddrs) > 0 {
-			proxySettings.DB.MySQLPublicAddr = cfg.Proxy.MySQLPublicAddrs[0].String()
-		}
 		var fs http.FileSystem
 		if !process.Config.Proxy.DisableWebInterface {
 			fs, err = newHTTPFileSystem()
@@ -2587,7 +2578,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 				ProxySSHAddr:     proxySSHAddr,
 				ProxyWebAddr:     cfg.Proxy.WebAddr,
 				ProxyPublicAddrs: cfg.Proxy.PublicAddrs,
-				ProxySettings:    proxySettings,
+				ProxySettings:    proxySettingsFromConfig(cfg),
 				CipherSuites:     cfg.CipherSuites,
 				FIPS:             cfg.FIPS,
 				AccessPoint:      accessPoint,
@@ -2676,24 +2667,32 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			// to web UI or application access) and those served by a database
 			// access for databases that use plain TLS handshake (such as
 			// MongoDB).
-			listeners.tls, err = multiplexer.NewTLSListener(multiplexer.TLSListenerConfig{
-				ID:       teleport.Component(teleport.ComponentProxy, "web", process.id),
-				Listener: tls.NewListener(listeners.web, tlsConfig),
-			})
-			if err != nil {
-				return trace.Wrap(err)
-			}
-			listeners.web = listeners.tls.HTTP()
-			listeners.db.tls = listeners.tls.DB()
-
-			process.RegisterCriticalFunc("proxy.tls", func() error {
-				log.Infof("TLS multiplexer is starting on %v.", cfg.Proxy.WebAddr.Addr)
-				if err := listeners.tls.Serve(); !trace.IsConnectionProblem(err) {
-					log.WithError(err).Warn("TLS multiplexer error.")
+			tlsConfigWeb = tlsConfig
+			//TODO(smallinksy) remove
+			//listeners.web = tls.NewListener(listeners.web, tlsConfig)
+			if false {
+				listeners.tls, err = multiplexer.NewTLSListener(multiplexer.TLSListenerConfig{
+					ID:       teleport.Component(teleport.ComponentProxy, "web", process.id),
+					Listener: tls.NewListener(listeners.web, tlsConfig),
+				})
+				if err != nil {
+					return trace.Wrap(err)
 				}
-				log.Info("TLS multiplexer exited.")
-				return nil
-			})
+				listeners.web = listeners.tls.HTTP()
+				listeners.db.tls = listeners.tls.DB()
+
+				process.RegisterCriticalFunc("proxy.tls", func() error {
+					log.Infof("TLS multiplexer is starting on %v.", cfg.Proxy.WebAddr.Addr)
+					if err := listeners.tls.Serve(); !trace.IsConnectionProblem(err) {
+						log.WithError(err).Warn("TLS multiplexer error.")
+					}
+					log.Info("TLS multiplexer exited.")
+					return nil
+				})
+			}
+		} else {
+			listeners.webWrapper = listeners.web
+
 		}
 		webServer = &http.Server{
 			Handler:           proxyLimiter,
@@ -2706,7 +2705,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			log.Infof("Web proxy service %s:%s is starting on %v.", teleport.Version, teleport.Gitref, cfg.Proxy.WebAddr.Addr)
 			defer webHandler.Close()
 			process.BroadcastEvent(Event{Name: ProxyWebServerReady, Payload: webHandler})
-			if err := webServer.Serve(listeners.web); err != nil && err != http.ErrServerClosed {
+			if err := webServer.Serve(listeners.webWrapper); err != nil && err != http.ErrServerClosed {
 				log.Warningf("Error while serving web requests: %v", err)
 			}
 			log.Info("Exited.")
@@ -2716,7 +2715,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		log.Info("Web UI is disabled.")
 	}
 
-	sshProxy, err := regular.New(proxySSHAddr,
+	sshProxy, err := regular.New(cfg.Proxy.SSHAddr,
 		cfg.Hostname,
 		[]ssh.Signer{conn.ServerIdentity.KeySigner},
 		accessPoint,
@@ -2747,8 +2746,8 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 
 	process.RegisterCriticalFunc("proxy.ssh", func() error {
 		utils.Consolef(cfg.Console, log, teleport.ComponentProxy, "SSH proxy service %s:%s is starting on %v.",
-			teleport.Version, teleport.Gitref, proxySSHAddr.Addr)
-		log.Infof("SSH proxy service %s:%s is starting on %v", teleport.Version, teleport.Gitref, proxySSHAddr)
+			teleport.Version, teleport.Gitref, cfg.Proxy.SSHAddr.Addr)
+		log.Infof("SSH proxy service %s:%s is starting on %v", teleport.Version, teleport.Gitref, cfg.Proxy.SSHAddr)
 		go sshProxy.Serve(listeners.ssh)
 		// broadcast that the proxy ssh server has started
 		process.BroadcastEvent(Event{Name: ProxySSHReady, Payload: nil})
@@ -2785,7 +2784,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	})
 
 	var kubeServer *kubeproxy.TLSServer
-	if listeners.kube != nil && !process.Config.Proxy.DisableReverseTunnel {
+	if (listeners.kube != nil || listeners.alpnRouter != nil) && !process.Config.Proxy.DisableReverseTunnel {
 		authorizer, err := auth.NewAuthorizer(clusterName, conn.Client, conn.Client, conn.Client)
 		if err != nil {
 			return trace.Wrap(err)
@@ -2835,6 +2834,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			log := logrus.WithFields(logrus.Fields{
 				trace.Component: component,
 			})
+
 			log.Infof("Starting Kube proxy on %v.", cfg.Proxy.Kube.ListenAddr.Addr)
 			err := kubeServer.Serve(listeners.kube)
 			if err != nil && err != http.ErrServerClosed {
@@ -2848,7 +2848,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	// the database clients (such as psql or mysql), authenticating them, and
 	// then routing them to a respective database server over the reverse tunnel
 	// framework.
-	if !listeners.db.Empty() && !process.Config.Proxy.DisableReverseTunnel {
+	if !listeners.db.Empty() || listeners.alpnRouter != nil && !process.Config.Proxy.DisableReverseTunnel {
 		authorizer, err := auth.NewAuthorizer(clusterName, conn.Client, conn.Client, conn.Client)
 		if err != nil {
 			return trace.Wrap(err)
@@ -2871,6 +2871,18 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		if err != nil {
 			return trace.Wrap(err)
 		}
+
+		if alpnRouteMap != nil {
+			alpnRouteMap.Add(alpnproxy.HandlerDecs{
+				Protocols: []string{alpnproxy.ProtocolMySQL},
+				Handler:   dbProxyServer.MySQLProxy().HandleConnection,
+			})
+			alpnRouteMap.Add(alpnproxy.HandlerDecs{
+				Protocols: []string{alpnproxy.ProtocolPostgres},
+				Handler:   dbProxyServer.PostgresProxy().HandleConnection,
+			})
+		}
+
 		log := process.log.WithField(trace.Component, teleport.Component(teleport.ComponentDatabase))
 		if listeners.db.postgres != nil {
 			process.RegisterCriticalFunc("proxy.db.db", func() error {
@@ -2890,15 +2902,34 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 				return nil
 			})
 		}
-		if listeners.db.tls != nil {
+		if listeners.webTLSDB != nil {
 			process.RegisterCriticalFunc("proxy.db.tls", func() error {
 				log.Infof("Starting Database TLS proxy server on %v.", cfg.Proxy.WebAddr.Addr)
-				if err := dbProxyServer.ServeTLS(listeners.db.tls); err != nil {
+				if err := dbProxyServer.ServeTLS(listeners.webTLSDB); err != nil {
 					log.WithError(err).Warn("Database TLS proxy server exited with error.")
 				}
 				return nil
 			})
 		}
+	}
+
+	var alpnServer *alpnproxy.Proxy
+	if !cfg.Proxy.DisableTLS && listeners.web != nil {
+		alpnServer, err = alpnproxy.New(alpnproxy.Config{
+			TLSConfig: tlsConfigWeb.Clone(),
+			Router:    alpnRouteMap,
+			Listener:  listeners.web,
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		process.RegisterCriticalFunc("proxy.alpn.router", func() error {
+			log.Infof("Starting ALPN Router proxy server on %v.", cfg.Proxy.ALPNRouter.Addr)
+			if err := alpnServer.Serve(process.ExitContext()); err != nil {
+				log.WithError(err).Warn("ALPN proxy server exited with error.")
+			}
+			return nil
+		})
 	}
 
 	// execute this when process is asked to exit:
@@ -2931,6 +2962,9 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			if kubeServer != nil {
 				warnOnErr(kubeServer.Close(), log)
 			}
+			if alpnServer != nil {
+				warnOnErr(alpnServer.Close(), log)
+			}
 		} else {
 			log.Infof("Shutting down gracefully.")
 			ctx := payloadContext(payload, log)
@@ -2947,6 +2981,9 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			if webHandler != nil {
 				warnOnErr(webHandler.Close(), log)
 			}
+			if alpnServer != nil {
+				warnOnErr(alpnServer.Close(), log)
+			}
 		}
 		// Close client after graceful shutdown has been completed,
 		// to make sure in flight streams are not terminated,
@@ -2959,6 +2996,93 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		return trace.Wrap(err)
 	}
 	return nil
+}
+
+func setupALPN(listeners *proxyListeners, cfg *Config) *alpnproxy.Router {
+	if listeners.web == nil || cfg.Proxy.DisableWebService && cfg.Proxy.DisableTLS {
+		return nil
+	}
+	router := alpnproxy.NewRouter()
+	if cfg.Proxy.Kube.Enabled {
+		kubeListener := alpnproxy.NewListenerWrapper(listeners.kube, listeners.web)
+		router.AddKubeHandler(kubeListener.HandleConnection)
+		listeners.kube = kubeListener
+	}
+
+	if !cfg.Proxy.DisableReverseTunnel {
+		reverseTunnel := alpnproxy.NewListenerWrapper(listeners.reverseTunnel, listeners.web)
+		router.Add(alpnproxy.HandlerDecs{
+			Protocols: []string{alpnproxy.ProtocolReverseTunnel},
+			Handler:   reverseTunnel.HandleConnection,
+		})
+		listeners.reverseTunnel = reverseTunnel
+	}
+
+	if !cfg.Proxy.DisableWebService {
+		webListener := alpnproxy.NewListenerWrapper(nil, listeners.web)
+		router.Add(alpnproxy.HandlerDecs{
+			Protocols:  []string{alpnproxy.ProtocolHTTP, alpnproxy.ProtocolHTTP2, alpnproxy.ProtocolDefault},
+			Handler:    webListener.HandleConnection,
+			ForwardTLS: false,
+		})
+		listeners.webWrapper = webListener
+	}
+	sshProxyListener := alpnproxy.NewListenerWrapper(listeners.ssh, listeners.web)
+	router.Add(alpnproxy.HandlerDecs{
+		Protocols: []string{alpnproxy.ProtocolProxySSH},
+		Handler:   sshProxyListener.HandleConnection,
+	})
+	listeners.ssh = sshProxyListener
+
+	webTLSDB := alpnproxy.NewListenerWrapper(nil, listeners.web)
+	router.AddDBTLSHandler(webTLSDB.HandleConnection)
+	listeners.webTLSDB = webTLSDB
+
+	return router
+}
+
+func proxySettingsFromConfig(cfg *Config) webclient.ProxySettings {
+	proxySettings := webclient.ProxySettings{
+		MultiPortSetup: !cfg.Proxy.DisableMultiPortSetup && !cfg.Proxy.DisableTLS,
+		Kube: webclient.KubeProxySettings{
+			Enabled: cfg.Proxy.Kube.Enabled,
+		},
+		SSH: webclient.SSHProxySettings{
+			ListenAddr:       cfg.Proxy.SSHAddr.Addr,
+			TunnelListenAddr: cfg.Proxy.ReverseTunnelListenAddr.String(),
+		},
+	}
+	if len(cfg.Proxy.PublicAddrs) > 0 {
+		proxySettings.SSH.PublicAddr = cfg.Proxy.PublicAddrs[0].String()
+	}
+	if len(cfg.Proxy.SSHPublicAddrs) > 0 {
+		proxySettings.SSH.SSHPublicAddr = cfg.Proxy.SSHPublicAddrs[0].String()
+	}
+	if len(cfg.Proxy.TunnelPublicAddrs) > 0 {
+		proxySettings.SSH.TunnelPublicAddr = cfg.Proxy.TunnelPublicAddrs[0].String()
+	}
+	if cfg.Proxy.Kube.Enabled {
+		proxySettings.Kube.ListenAddr = cfg.Proxy.Kube.ListenAddr.String()
+	}
+	if len(cfg.Proxy.Kube.PublicAddrs) > 0 {
+		proxySettings.Kube.PublicAddr = cfg.Proxy.Kube.PublicAddrs[0].String()
+	}
+	if len(cfg.Proxy.PostgresPublicAddrs) > 0 {
+		proxySettings.DB.PostgresPublicAddr = cfg.Proxy.PostgresPublicAddrs[0].String()
+	}
+	if !cfg.Proxy.MySQLAddr.IsEmpty() {
+		proxySettings.DB.MySQLListenAddr = cfg.Proxy.MySQLAddr.String()
+	}
+	if len(cfg.Proxy.MySQLPublicAddrs) > 0 {
+		proxySettings.DB.MySQLPublicAddr = cfg.Proxy.MySQLPublicAddrs[0].String()
+	}
+
+	if !cfg.Proxy.WebAddr.IsEmpty() || !cfg.Proxy.DisableTLS {
+		if proxySettings.SSH.ListenAddr == "" {
+			proxySettings.SSH.TunnelListenAddr = cfg.Proxy.WebAddr.String()
+		}
+	}
+	return proxySettings
 }
 
 // registerAppDepend will register dependencies for application service.
@@ -3521,7 +3645,7 @@ func newHTTPFileSystem() (http.FileSystem, error) {
 		return fs, nil
 	}
 	// Use debug HTTP file system with default assets path
-	fs, err := web.NewDebugFileSystem("")
+	fs, err := web.NewDebugFileSystem("/Users/marek/Go/src/github.com/gravitational/teleport/webassets/e/teleport/")
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

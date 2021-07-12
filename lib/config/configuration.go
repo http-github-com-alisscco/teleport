@@ -601,6 +601,7 @@ func applyProxyConfig(fc *FileConfig, cfg *service.Config) error {
 		cfg.Proxy.MySQLAddr = *addr
 	}
 
+
 	// This is the legacy format. Continue to support it forever, but ideally
 	// users now use the list format below.
 	if fc.Proxy.KeyFile != "" || fc.Proxy.CertFile != "" {
