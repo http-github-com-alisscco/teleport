@@ -64,8 +64,8 @@ func TestNewProxy(t *testing.T) {
 			suite := newProxySuite(t,
 				withMainConfig(mainStandardConfig(t)),
 				withSecondConfig(mainSecondConfig(t)),
-				withMainClusterPorts(standardPortSetup()),
-				withSecondClusterPorts(oneProxyPortSetup()),
+				withMainClusterPorts(tc.mainClusterPortSetup),
+				withSecondClusterPorts(tc.secondClusterPortSetup),
 				withMainAndSecondClusterRoles(createAdminRole(username)),
 				withStandardRoleMapping(),
 			)

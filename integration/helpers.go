@@ -235,7 +235,6 @@ func NewInstance(cfg InstanceConfig) *TeleInstance {
 		UploadEventsC: make(chan events.UploadEvent, 100),
 		log:           cfg.log,
 		InstancePorts: *cfg.Ports,
-
 	}
 
 	secrets := InstanceSecrets{
@@ -1163,17 +1162,12 @@ func (i *TeleInstance) NewUnauthenticatedClient(cfg ClientConfig) (tc *client.Te
 	var webProxyAddr string
 	var sshProxyAddr string
 
-	if i.singlePortSetup {
-		webProxyAddr = i.GetProxyAddr()
-		sshProxyAddr = i.GetSSHAddr()
+	if cfg.Proxy == nil {
+		webProxyAddr = i.GetWebAddr()
+		sshProxyAddr = i.GetProxyAddr()
 	} else {
-		if cfg.Proxy == nil {
-			webProxyAddr = proxyConf.WebAddr.Addr
-			sshProxyAddr = proxyConf.SSHAddr.Addr
-		} else {
-			webProxyAddr = net.JoinHostPort(proxyHost, strconv.Itoa(cfg.Proxy.WebPort))
-			sshProxyAddr = net.JoinHostPort(proxyHost, strconv.Itoa(cfg.Proxy.SSHPort))
-		}
+		webProxyAddr = net.JoinHostPort(proxyHost, strconv.Itoa(cfg.Proxy.WebPort))
+		sshProxyAddr = net.JoinHostPort(proxyHost, strconv.Itoa(cfg.Proxy.SSHPort))
 	}
 
 	fwdAgentMode := client.ForwardAgentNo

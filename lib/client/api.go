@@ -2115,7 +2115,6 @@ func makeProxySSHClient(cfg Config, sshConfig *ssh.ClientConfig) (*ssh.Client, e
 		if err != nil {
 			log.WithError(err).Warnf("failed to dial tls %v.", cfg.WebProxyAddr)
 			return nil, trace.Wrap(err, "failed to dial tls %v", cfg.WebProxyAddr)
-
 		}
 		c, chans, reqs, err := ssh.NewClientConn(tlsConn, cfg.WebProxyAddr, sshConfig)
 		if err != nil {
