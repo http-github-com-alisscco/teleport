@@ -27,6 +27,7 @@ import (
 	apiutils "github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/lib/auth/u2f"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/hsm"
 	"github.com/gravitational/teleport/lib/jwt"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -48,17 +49,30 @@ func CertAuthoritiesEquivalent(lhs, rhs types.CertAuthority) bool {
 
 // NewJWTAuthority creates and returns a types.CertAuthority with a new
 // key pair.
-func NewJWTAuthority(clusterName string) (types.CertAuthority, error) {
-	var err error
-	var keyPair types.JWTKeyPair
-	if keyPair.PublicKey, keyPair.PrivateKey, err = jwt.GenerateKeyPair(); err != nil {
+func NewJWTAuthority(clusterName string, hsmClient hsm.Client) (types.CertAuthority, error) {
+	jwtPrivateKey, err := hsmClient.GenerateRSA()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	signer, err := hsmClient.GetSigner(jwtPrivateKey)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	jwtPublicKey, err := utils.MarshalPublicKey(signer)
+	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return types.NewCertAuthority(types.CertAuthoritySpecV2{
 		Type:        types.JWTSigner,
 		ClusterName: clusterName,
 		ActiveKeys: types.CAKeySet{
-			JWT: []*types.JWTKeyPair{&keyPair},
+			JWT: []*types.JWTKeyPair{
+				&types.JWTKeyPair{
+					PrivateKey:     jwtPrivateKey,
+					PrivateKeyType: hsm.KeyType(jwtPrivateKey),
+					PublicKey:      jwtPublicKey,
+				},
+			},
 		},
 	})
 }
@@ -119,7 +133,8 @@ func checkJWTKeys(cai types.CertAuthority) error {
 
 	// Check that the JWT keys set are valid.
 	for _, pair := range ca.GetTrustedJWTKeyPairs() {
-		if len(pair.PrivateKey) > 0 {
+		// TODO(nic): validate PKCS11 private keys
+		if len(pair.PrivateKey) > 0 && pair.PrivateKeyType == types.PrivateKeyType_RAW {
 			privateKey, err = utils.ParsePrivateKey(pair.PrivateKey)
 			if err != nil {
 				return trace.Wrap(err)
@@ -143,12 +158,37 @@ func checkJWTKeys(cai types.CertAuthority) error {
 	return nil
 }
 
-// GetJWTSigner returns the active JWT key used to sign tokens.
-func GetJWTSigner(ca types.CertAuthority, clock clockwork.Clock) (*jwt.Key, error) {
-	if len(ca.GetActiveKeys().JWT) == 0 {
-		return nil, trace.BadParameter("no JWT keypairs found")
+func selectJWTSigner(ca types.CertAuthority, hsmClient hsm.Client) (crypto.Signer, error) {
+	keyPairs := ca.GetActiveKeys().JWT
+	if len(keyPairs) == 0 {
+		return nil, trace.NotFound("no JWT keypairs found")
 	}
-	privateKey, err := utils.ParsePrivateKey(ca.GetActiveKeys().JWT[0].PrivateKey)
+	// prefer hsm key if there is one
+	for _, keyPair := range keyPairs {
+		if keyPair.PrivateKeyType == types.PrivateKeyType_PKCS11 {
+			signer, err := hsmClient.GetSigner(keyPair.PrivateKey)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			return signer, nil
+		}
+	}
+	// if there are no hsm keys for this host, check for a raw key
+	for _, keyPair := range keyPairs {
+		if keyPair.PrivateKeyType == types.PrivateKeyType_RAW {
+			signer, err := utils.ParsePrivateKey(keyPair.PrivateKey)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			return signer, nil
+		}
+	}
+	return nil, trace.NotFound("no JWT key pairs found in CA for %q", ca.GetClusterName())
+}
+
+// GetJWTSigner returns the active JWT key used to sign tokens.
+func GetJWTSigner(ca types.CertAuthority, hsmClient hsm.Client, clock clockwork.Clock) (*jwt.Key, error) {
+	signer, err := selectJWTSigner(ca, hsmClient)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -156,7 +196,7 @@ func GetJWTSigner(ca types.CertAuthority, clock clockwork.Clock) (*jwt.Key, erro
 		Clock:       clock,
 		Algorithm:   defaults.ApplicationTokenAlgorithm,
 		ClusterName: ca.GetClusterName(),
-		PrivateKey:  privateKey,
+		PrivateKey:  signer,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
