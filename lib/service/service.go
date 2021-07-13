@@ -2575,7 +2575,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 				ProxySSHAddr:     proxySSHAddr,
 				ProxyWebAddr:     cfg.Proxy.WebAddr,
 				ProxyPublicAddrs: cfg.Proxy.PublicAddrs,
-				ProxySettings:    proxySettingsFromConfig(cfg),
+				ProxySettings:    proxySettingsFromConfig(cfg, proxySSHAddr),
 				CipherSuites:     cfg.CipherSuites,
 				FIPS:             cfg.FIPS,
 				AccessPoint:      accessPoint,
@@ -3038,14 +3038,14 @@ func setupALPN(listeners *proxyListeners, cfg *Config) *alpnproxy.Router {
 	return router
 }
 
-func proxySettingsFromConfig(cfg *Config) webclient.ProxySettings {
+func proxySettingsFromConfig(cfg *Config, proxySSHAddr utils.NetAddr) webclient.ProxySettings {
 	proxySettings := webclient.ProxySettings{
 		MultiPortSetup: !cfg.Proxy.DisableMultiPortSetup && !cfg.Proxy.DisableTLS,
 		Kube: webclient.KubeProxySettings{
 			Enabled: cfg.Proxy.Kube.Enabled,
 		},
 		SSH: webclient.SSHProxySettings{
-			ListenAddr:       cfg.Proxy.SSHAddr.Addr,
+			ListenAddr:       proxySSHAddr.String(),
 			TunnelListenAddr: cfg.Proxy.ReverseTunnelListenAddr.String(),
 		},
 	}
