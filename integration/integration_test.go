@@ -1972,10 +1972,10 @@ func trustedClusters(t *testing.T, suite *integrationTestSuite, test trustedClus
 		ClusterName: clusterMain,
 		HostID:      HostID,
 		NodeName:    Host,
-		Priv:  suite.priv,
-		Pub:   suite.pub,
-		log:   suite.log,
-		Ports: standardPortsOrMuxSetup(test.multiplex),
+		Priv:        suite.priv,
+		Pub:         suite.pub,
+		log:         suite.log,
+		Ports:       standardPortsOrMuxSetup(test.multiplex),
 	})
 	aux := suite.newNamedTeleportInstance(t, clusterAux)
 

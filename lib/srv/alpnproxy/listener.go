@@ -34,7 +34,7 @@ func NewListenerWrapper(listener net.Listener, tt net.Listener) *ListenerWrapper
 }
 
 type ListenerWrapper struct {
-	tt   net.Listener
+	tt net.Listener
 	net.Listener
 	connC chan net.Conn
 	errC  chan error

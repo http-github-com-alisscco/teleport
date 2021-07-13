@@ -57,10 +57,8 @@ func onProxyCommandDB(cf *CLIConf) error {
 	ctx, cancel := context.WithCancel(cf.Context)
 	defer cancel()
 	go func() {
-		select {
-		case <-ctx.Done():
-			lp.Close()
-		}
+		<-ctx.Done()
+		lp.Close()
 	}()
 
 	fmt.Printf("Started DB proxy on %q\n", listener.Addr())

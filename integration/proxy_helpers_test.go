@@ -248,12 +248,6 @@ func withSecondConfig(fn func(suite *ProxySuite) *service.Config, configModFunct
 	}
 }
 
-func withUpdateRoleMappingFunc(fn func(t *testing.T, suite *ProxySuite)) proxySuiteOptionsFunc {
-	return func(options *proxySuiteOptions) {
-		options.updateRoleMappingFunc = fn
-	}
-}
-
 func withMainConfig(fn func(suite *ProxySuite) *service.Config, configModFunctions ...func(config *service.Config)) proxySuiteOptionsFunc {
 	return func(options *proxySuiteOptions) {
 		options.mainConfigFunc = fn
@@ -438,7 +432,6 @@ func mkPodList() *v1.PodList {
 func startKubeAPIMock(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", func(rw http.ResponseWriter, request *http.Request) {
-		return
 	})
 	mux.HandleFunc("/api/v1/namespaces/default/pods", func(rw http.ResponseWriter, request *http.Request) {
 		rw.Header().Add("Content-Type", "application/json")

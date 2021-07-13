@@ -399,7 +399,6 @@ func withClock(clock clockwork.Clock) testOptionFunc {
 	}
 }
 
-
 func withPortSetupDatabaseTest(portFn func() *InstancePorts) testOptionFunc {
 	return func(o *testOptions) {
 		o.instancePortsFunc = portFn

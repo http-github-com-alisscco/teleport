@@ -48,7 +48,7 @@ const (
 )
 
 type LocalProxyConfig struct {
-	RemoveProxyAddr    string
+	RemoveProxyAddr string
 	//ListenerAddr       string
 	Protocol           Protocol
 	User               string
@@ -59,9 +59,8 @@ type LocalProxyConfig struct {
 }
 
 type LocalProxy struct {
-	cfg      LocalProxyConfig
-	close    chan struct{}
-	listener net.Listener
+	cfg   LocalProxyConfig
+	close chan struct{}
 }
 
 func NewLocalProxy(cfg LocalProxyConfig) *LocalProxy {

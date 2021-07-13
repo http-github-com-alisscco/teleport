@@ -79,6 +79,7 @@ type Dialer interface {
 type directDial struct {
 	useTLS bool
 }
+
 func isALPNUnsupportedError(err error) bool {
 	return err.Error() == "ssh: handshake failed: EOF"
 }

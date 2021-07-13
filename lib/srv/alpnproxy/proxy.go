@@ -66,7 +66,7 @@ func (r *Router) AddDBTLSHandler(handler HandlerFunc) {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 	r.databaseTLSHandler = &HandlerDecs{
-		Handler:    handler,
+		Handler: handler,
 	}
 }
 
@@ -200,7 +200,6 @@ func (p *Proxy) getHandleDescBasedOnALPNVal(clientHelloInfo *tls.ClientHelloInfo
 	}
 	return handlerDesc, nil
 }
-
 
 func shouldRouteToKubeService(sni string) bool {
 	return strings.HasPrefix(sni, KubeSNIPrefix)

@@ -307,7 +307,7 @@ func onDatabaseConnect(cf *CLIConf) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	var opts []connectCommandFunc
+	var opts []ConnectCommandFunc
 	if tc.MultiPortSetup {
 		listener, err := net.Listen("tcp", ":0")
 		if err != nil {
@@ -386,16 +386,16 @@ type connectionCommandOpts struct {
 	localProxyHost string
 }
 
-type connectCommandFunc func(*connectionCommandOpts)
+type ConnectCommandFunc func(*connectionCommandOpts)
 
-func WithLocalProxyRoute(localProxyPort int, host string) connectCommandFunc {
+func WithLocalProxyRoute(localProxyPort int, host string) ConnectCommandFunc {
 	return func(opts *connectionCommandOpts) {
 		opts.localProxyPort = localProxyPort
 		opts.localProxyHost = host
 	}
 }
 
-func getConnectCommand(cf *CLIConf, tc *client.TeleportClient, profile *client.ProfileStatus, db *tlsca.RouteToDatabase, opts ...connectCommandFunc) (*exec.Cmd, error) {
+func getConnectCommand(cf *CLIConf, tc *client.TeleportClient, profile *client.ProfileStatus, db *tlsca.RouteToDatabase, opts ...ConnectCommandFunc) (*exec.Cmd, error) {
 	var options connectionCommandOpts
 	for _, opt := range opts {
 		opt(&options)
