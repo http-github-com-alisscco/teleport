@@ -131,9 +131,6 @@ const (
 	// ComponentProxy is SSH proxy (SSH server forwarding connections)
 	ComponentProxy = "proxy"
 
-	// TODO Add comment
-	ComponentALPNRouter = "alpnRouter"
-
 	// ComponentApp is the application proxy service.
 	ComponentApp = "app:service"
 

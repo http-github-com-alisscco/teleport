@@ -2106,22 +2106,26 @@ func (tc *TeleportClient) connectToProxy(ctx context.Context) (*ProxyClient, err
 	}, nil
 }
 
+func makeProxySSHClientWithTLSWrapper(cfg Config, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	tlsConn, err := tls.Dial("tcp", cfg.WebProxyAddr, &tls.Config{
+		NextProtos:         []string{alpnproxy.ProtocolProxySSH},
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	})
+	if err != nil {
+		log.WithError(err).Warnf("failed to dial tls %v.", cfg.WebProxyAddr)
+		return nil, trace.Wrap(err, "failed to dial tls %v", cfg.WebProxyAddr)
+	}
+	c, chans, reqs, err := ssh.NewClientConn(tlsConn, cfg.WebProxyAddr, sshConfig)
+	if err != nil {
+		log.WithError(err).Warnf("Failed to authenticate with proxy %v.", cfg.WebProxyAddr)
+		return nil, trace.Wrap(err, "failed to authenticate with proxy %v", cfg.WebProxyAddr)
+	}
+	return ssh.NewClient(c, chans, reqs), nil
+}
+
 func makeProxySSHClient(cfg Config, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 	if cfg.MultiPortSetup {
-		tlsConn, err := tls.Dial("tcp", cfg.WebProxyAddr, &tls.Config{
-			NextProtos:         []string{alpnproxy.ProtocolProxySSH},
-			InsecureSkipVerify: cfg.InsecureSkipVerify,
-		})
-		if err != nil {
-			log.WithError(err).Warnf("failed to dial tls %v.", cfg.WebProxyAddr)
-			return nil, trace.Wrap(err, "failed to dial tls %v", cfg.WebProxyAddr)
-		}
-		c, chans, reqs, err := ssh.NewClientConn(tlsConn, cfg.WebProxyAddr, sshConfig)
-		if err != nil {
-			log.WithError(err).Warnf("Failed to authenticate with proxy %v.", cfg.WebProxyAddr)
-			return nil, trace.Wrap(err, "failed to authenticate with proxy %v", cfg.WebProxyAddr)
-		}
-		return ssh.NewClient(c, chans, reqs), nil
+		return makeProxySSHClientWithTLSWrapper(cfg, sshConfig)
 	}
 	client, err := ssh.Dial("tcp", cfg.SSHProxyAddr, sshConfig)
 	if err != nil {

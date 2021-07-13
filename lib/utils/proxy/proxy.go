@@ -171,10 +171,20 @@ func DialerFromEnvironment(addr string) Dialer {
 	return proxyDial{proxyHost: proxyAddr}
 }
 
-func SNIProxyDialer() Dialer {
-	return &directDial{
-		useTLS: true,
+type DirectDialerOptFunc func(dial *directDial)
+
+func WithTLSDirectDialer() DirectDialerOptFunc {
+	return func(dial *directDial) {
+		dial.useTLS = true
 	}
+}
+
+func NewDirectDialer(opts ...DirectDialerOptFunc) Dialer {
+	dialer := &directDial{}
+	for _, opt := range opts {
+		opt(dialer)
+	}
+	return dialer
 }
 
 func dialProxy(ctx context.Context, proxyAddr string, addr string) (net.Conn, error) {

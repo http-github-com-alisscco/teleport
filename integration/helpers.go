@@ -574,7 +574,7 @@ func (i *TeleInstance) GenerateConfig(t *testing.T, trustedSecrets []*InstanceSe
 
 	if i.singlePortSetup {
 		tconf.Proxy.WebAddr.Addr = net.JoinHostPort(i.Hostname, i.GetPortWeb())
-		//Reset other addresses to ensure that teleport instance will expose only web port listener.
+		// Reset other addresses to ensure that teleport instance will expose only web port listener.
 		tconf.Proxy.ReverseTunnelListenAddr = utils.NetAddr{}
 		tconf.Proxy.MySQLAddr = utils.NetAddr{}
 		tconf.Proxy.SSHAddr = utils.NetAddr{}
