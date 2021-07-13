@@ -594,6 +594,11 @@ func (r *RoleV4) CheckAndSetDefaults() error {
 			return trace.BadParameter("wildcard matcher is not allowed in logins")
 		}
 	}
+	for _, arn := range r.Spec.Allow.AWSRoleARNs {
+		if arn == Wildcard {
+			return trace.BadParameter("wildcard matcher is not allowed in aws_role_arns")
+		}
+	}
 	for key, val := range r.Spec.Allow.NodeLabels {
 		if key == Wildcard && !(len(val) == 1 && val[0] == Wildcard) {
 			return trace.BadParameter("selector *:<val> is not supported")

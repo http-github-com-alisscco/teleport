@@ -31,6 +31,8 @@ import (
 type App struct {
 	// Name is the name of the application.
 	Name string `json:"name"`
+	// Description is the app description.
+	Description string `json:"description"`
 	// URI is the internal address the application is available at.
 	URI string `json:"uri"`
 	// PublicAddr is the public address the application is accessible at.
@@ -88,6 +90,7 @@ func MakeApps(c MakeAppsConfig) []App {
 
 			app := App{
 				Name:         teleApp.Name,
+				Description:  teleApp.Description,
 				URI:          teleApp.URI,
 				PublicAddr:   teleApp.PublicAddr,
 				Labels:       labels,
@@ -109,11 +112,12 @@ func MakeApps(c MakeAppsConfig) []App {
 }
 
 // filterAWSRoleARNs returns role ARNs from the provided list that belong
-// to the specified AWS account ID.
+// to the specified AWS account ID. If AWS account ID is empty, all roles
+// are returned.
 func filterAWSRoleARNs(awsRoleARNS []string, awsAccountID string) (result []AWSRole) {
 	for _, roleARN := range awsRoleARNS {
 		parsed, err := arn.Parse(roleARN)
-		if err != nil || parsed.AccountID != awsAccountID {
+		if err != nil || (awsAccountID != "" && parsed.AccountID != awsAccountID) {
 			continue
 		}
 		// Example ARN: arn:aws:iam::1234567890:role/EC2FullAccess.
