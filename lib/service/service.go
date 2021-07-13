@@ -2235,10 +2235,10 @@ type proxyListeners struct {
 	reverseTunnel net.Listener
 	kube          net.Listener
 	db            dbListeners
-	webWrapper    net.Listener
-	webTLSDB      net.Listener
 
-	alpnRouter net.Listener
+	//TODO(smallinksy) move to alpn logic
+	webWrapper net.Listener
+	webTLSDB   net.Listener
 }
 
 // dbListeners groups database access listeners.
@@ -2285,9 +2285,6 @@ func (l *proxyListeners) Close() {
 	}
 	if l.kube != nil {
 		l.kube.Close()
-	}
-	if l.alpnRouter != nil {
-		l.alpnRouter.Close()
 	}
 	if !l.db.Empty() {
 		l.db.Close()
@@ -2784,7 +2781,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	})
 
 	var kubeServer *kubeproxy.TLSServer
-	if (listeners.kube != nil || listeners.alpnRouter != nil) && !process.Config.Proxy.DisableReverseTunnel {
+	if (listeners.kube != nil || alpnRouteMap != nil) && !process.Config.Proxy.DisableReverseTunnel {
 		authorizer, err := auth.NewAuthorizer(clusterName, conn.Client, conn.Client, conn.Client)
 		if err != nil {
 			return trace.Wrap(err)
@@ -2848,7 +2845,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 	// the database clients (such as psql or mysql), authenticating them, and
 	// then routing them to a respective database server over the reverse tunnel
 	// framework.
-	if !listeners.db.Empty() || listeners.alpnRouter != nil && !process.Config.Proxy.DisableReverseTunnel {
+	if !listeners.db.Empty() || alpnRouteMap != nil && !process.Config.Proxy.DisableReverseTunnel {
 		authorizer, err := auth.NewAuthorizer(clusterName, conn.Client, conn.Client, conn.Client)
 		if err != nil {
 			return trace.Wrap(err)
@@ -2924,7 +2921,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			return trace.Wrap(err)
 		}
 		process.RegisterCriticalFunc("proxy.alpn.router", func() error {
-			log.Infof("Starting ALPN Router proxy server on %v.", cfg.Proxy.ALPNRouter.Addr)
+			log.Infof("Starting ALPN Router proxy server on %v.", listeners.web.Addr())
 			if err := alpnServer.Serve(process.ExitContext()); err != nil {
 				log.WithError(err).Warn("ALPN proxy server exited with error.")
 			}
