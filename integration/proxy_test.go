@@ -178,7 +178,7 @@ func TestProxyDatabaseAccessProxySSNIDatabaseAccessPostgresRootClusterSNIProxy(t
 	require.NoError(t, err)
 
 	lp := alpnproxy.NewLocalProxy(alpnproxy.LocalProxyConfig{
-		RemoveProxyAddr:    pack.root.cluster.GetProxyAddr(),
+		RemoteProxyAddr:    pack.root.cluster.GetProxyAddr(),
 		Protocol:           alpnproxy.ProtocolPostgres,
 		InsecureSkipVerify: true,
 		Listener:           listener,

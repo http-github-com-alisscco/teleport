@@ -424,7 +424,7 @@ func mkLocalProxy(ctx context.Context, remoteProxyAddr string, protocol string, 
 		return nil, trace.Wrap(err)
 	}
 	lp := alpnproxy.NewLocalProxy(alpnproxy.LocalProxyConfig{
-		RemoveProxyAddr: remoteProxyAddr,
+		RemoteProxyAddr: remoteProxyAddr,
 		Protocol:        alpnProtocol,
 		Listener:        listener,
 	})

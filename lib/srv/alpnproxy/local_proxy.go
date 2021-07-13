@@ -37,25 +37,40 @@ import (
 type Protocol string
 
 const (
-	ProtocolPostgres      = "teleport-postgres"
-	ProtocolMySQL         = "teleport-mysql"
-	ProtocolMongoDB       = "teleport-mongodb"
-	ProtocolProxySSH      = "teleport-proxy-ssh"
+	// ProtocolPostgres is TLS ALPN protocol value used to indicate Postgres protocol.
+	ProtocolPostgres = "teleport-postgres"
+
+	// ProtocolMySQL is TLS ALPN protocol value used to indicate MySQL protocol.
+	ProtocolMySQL = "teleport-mysql"
+
+	// ProtocolMongoDB is TLS ALPN protocol value used to indicate Mongo protocol.
+	ProtocolMongoDB = "teleport-mongodb"
+
+	// ProtocolProxySSH is TLS ALPN protocol value used to indicate Proxy SSH protocol.
+	ProtocolProxySSH = "teleport-proxy-ssh"
+
+	// ProtocolReverseTunnel is TLS ALPN protocol value used to indicate Proxy reversetunnel protocol.
 	ProtocolReverseTunnel = "teleport-reversetunnel"
-	ProtocolHTTP          = "http/1.1"
-	ProtocolHTTP2         = "h2"
-	ProtocolDefault       = ""
+
+	// ProtocolHTTP is TLS ALPN protocol value used to indicate HTTP2 protocol
+	ProtocolHTTP = "http/1.1"
+
+	// ProtocolHTTP2 is TLS ALPN protocol value used to indicate HTTP2 protocol.
+	ProtocolHTTP2 = "h2"
+
+	// ProtocolDefault is default TLS ALPN value.
+	ProtocolDefault = ""
 )
 
 type LocalProxyConfig struct {
-	RemoveProxyAddr string
-	//ListenerAddr       string
+	RemoteProxyAddr    string
 	Protocol           Protocol
 	User               string
 	UserHost           string
 	HostKeyCallback    ssh.HostKeyCallback
 	InsecureSkipVerify bool
 	Listener           net.Listener
+	SNI                string
 }
 
 type LocalProxy struct {
@@ -79,9 +94,10 @@ func GetAgent() (agent.ExtendedAgent, error) {
 }
 
 func (l *LocalProxy) SSHProxy(ctx context.Context) error {
-	upstreamConn, err := tls.Dial("tcp", l.cfg.RemoveProxyAddr, &tls.Config{
+	upstreamConn, err := tls.Dial("tcp", l.cfg.RemoteProxyAddr, &tls.Config{
 		NextProtos:         []string{string(l.cfg.Protocol)},
 		InsecureSkipVerify: l.cfg.InsecureSkipVerify,
+		ServerName:         l.cfg.SNI,
 	})
 	if err != nil {
 		return trace.Wrap(err)
@@ -92,7 +108,7 @@ func (l *LocalProxy) SSHProxy(ctx context.Context) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	client, err := makeSSHClient(upstreamConn, l.cfg.RemoveProxyAddr, &ssh.ClientConfig{
+	client, err := makeSSHClient(upstreamConn, l.cfg.RemoteProxyAddr, &ssh.ClientConfig{
 		User: l.cfg.User,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeysCallback(sshAgent.Signers),
@@ -210,7 +226,7 @@ func (l *LocalProxy) GetAddr() string {
 
 func (l *LocalProxy) handleDownstreamConnection(ctx context.Context, downstreamConn net.Conn) error {
 	defer downstreamConn.Close()
-	upstreamConn, err := tls.Dial("tcp", l.cfg.RemoveProxyAddr, &tls.Config{
+	upstreamConn, err := tls.Dial("tcp", l.cfg.RemoteProxyAddr, &tls.Config{
 		NextProtos:         []string{string(l.cfg.Protocol)},
 		InsecureSkipVerify: l.cfg.InsecureSkipVerify,
 	})

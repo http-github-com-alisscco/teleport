@@ -17,7 +17,7 @@ func onProxyCommandSSH(cf *CLIConf) error {
 	}
 
 	lp := alpnproxy.NewLocalProxy(alpnproxy.LocalProxyConfig{
-		RemoveProxyAddr:    client.WebProxyAddr,
+		RemoteProxyAddr:    client.WebProxyAddr,
 		Protocol:           alpnproxy.ProtocolProxySSH,
 		User:               cf.Username,
 		UserHost:           cf.UserHost,
