@@ -367,6 +367,20 @@ func ApplyTraits(r types.Role, traits map[string][]string) types.Role {
 
 		r.SetLogins(condition, apiutils.Deduplicate(outLogins))
 
+		inRoleARNs := r.GetAWSRoleARNs(condition)
+		var outRoleARNs []string
+		for _, arn := range inRoleARNs {
+			variableValues, err := ApplyValueTraits(arn, traits)
+			if err != nil {
+				if !trace.IsNotFound(err) {
+					log.Debugf("Skipping AWS role ARN %v: %v.", arn, err)
+				}
+				continue
+			}
+			outRoleARNs = append(outRoleARNs, variableValues...)
+		}
+		r.SetAWSRoleARNs(condition, apiutils.Deduplicate(outRoleARNs))
+
 		// apply templates to kubernetes groups
 		inKubeGroups := r.GetKubeGroups(condition)
 		var outKubeGroups []string
@@ -786,10 +800,10 @@ type AccessChecker interface {
 	EnhancedRecordingSet() map[string]bool
 
 	// CheckAccessToApp checks access to an application.
-	CheckAccessToApp(login string, app *types.App, mfa AccessMFAParams, matchers ...RoleMatcher) error
+	CheckAccessToApp(namespace string, app *types.App, mfa AccessMFAParams, matchers ...RoleMatcher) error
 
 	// CheckAccessToKubernetes checks access to a kubernetes cluster.
-	CheckAccessToKubernetes(login string, app *types.KubernetesCluster, mfa AccessMFAParams) error
+	CheckAccessToKubernetes(namespace string, app *types.KubernetesCluster, mfa AccessMFAParams) error
 
 	// CheckDatabaseNamesAndUsers returns database names and users this role
 	// is allowed to use.

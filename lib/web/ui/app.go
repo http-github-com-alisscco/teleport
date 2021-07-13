@@ -19,12 +19,10 @@ package ui
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/tlsca"
-
-	"github.com/aws/aws-sdk-go/aws/arn"
+	"github.com/gravitational/teleport/lib/utils"
 )
 
 // App describes an application
@@ -46,15 +44,7 @@ type App struct {
 	// IsAWSConsole if true, indicates that the app represents AWS management console.
 	IsAWSConsole bool `json:"isAWSConsole"`
 	// AWSRoles is a list of AWS IAM roles for the application representing AWS console.
-	AWSRoles []AWSRole `json:"awsRoles,omitempty"`
-}
-
-// AWSRole describes an AWS IAM role for AWS console access.
-type AWSRole struct {
-	// Display is the role display name.
-	Display string `json:"display"`
-	// ARN is the full role ARN.
-	ARN string `json:"arn"`
+	AWSRoles []utils.AWSRole `json:"awsRoles,omitempty"`
 }
 
 // MakeAppsConfig contains parameters for converting apps to UI representation.
@@ -100,7 +90,7 @@ func MakeApps(c MakeAppsConfig) []App {
 			}
 
 			if teleApp.IsAWSConsole() {
-				app.AWSRoles = filterAWSRoleARNs(c.Identity.AWSRoleARNs,
+				app.AWSRoles = utils.FilterAWSRoles(c.Identity.AWSRoleARNs,
 					teleApp.GetAWSAccountID())
 			}
 
@@ -108,28 +98,6 @@ func MakeApps(c MakeAppsConfig) []App {
 		}
 	}
 
-	return result
-}
-
-// filterAWSRoleARNs returns role ARNs from the provided list that belong
-// to the specified AWS account ID. If AWS account ID is empty, all roles
-// are returned.
-func filterAWSRoleARNs(awsRoleARNS []string, awsAccountID string) (result []AWSRole) {
-	for _, roleARN := range awsRoleARNS {
-		parsed, err := arn.Parse(roleARN)
-		if err != nil || (awsAccountID != "" && parsed.AccountID != awsAccountID) {
-			continue
-		}
-		// Example ARN: arn:aws:iam::1234567890:role/EC2FullAccess.
-		parts := strings.Split(parsed.Resource, "/")
-		if len(parts) != 2 || parts[0] != "role" {
-			continue
-		}
-		result = append(result, AWSRole{
-			Display: parts[1],
-			ARN:     roleARN,
-		})
-	}
 	return result
 }
 

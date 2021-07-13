@@ -646,6 +646,8 @@ type AppTestCertRequest struct {
 	ClusterName string
 	// SessionID is the optional session ID to encode. Used for routing.
 	SessionID string
+	// AWSRoleARN is optional AWS role ARN a user wants to assume to encode.
+	AWSRoleARN string
 }
 
 // GenerateUserAppTestCert generates an application specific certificate, used
@@ -680,6 +682,7 @@ func (a *Server) GenerateUserAppTestCert(req AppTestCertRequest) ([]byte, error)
 		appSessionID:   sessionID,
 		appPublicAddr:  req.PublicAddr,
 		appClusterName: req.ClusterName,
+		awsRoleARN:     req.AWSRoleARN,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)

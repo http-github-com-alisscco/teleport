@@ -128,6 +128,8 @@ func (c *cloud) GetAWSSigninURL(req AWSSigninRequest) (*AWSSigninResponse, error
 
 	stsCredentials, err := stscreds.NewCredentials(c.cfg.Session, req.Identity.RouteToApp.AWSRoleARN,
 		func(creds *stscreds.AssumeRoleProvider) {
+			// Setting role session name to Teleport username will allow to
+			// associate CloudTrail events with the Teleport user.
 			creds.RoleSessionName = req.Identity.Username
 		}).Get()
 	if err != nil {
